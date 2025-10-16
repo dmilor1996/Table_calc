@@ -1,0 +1,129 @@
+name: Deploy ZIP to GitHub Pages
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find ZIP in repo root
+        run: |
+          ZIPFILE=$(ls *.zip 2>/dev/null | head -n1)
+          if [ -z "$ZIPFILE" ]; then
+            echo "No .zip in repo root"; exit 1
+          fi
+          echo "ZIPFILE=$ZIPFILE" >> $GITHUB_ENV
+          echo "Found: $ZIPFILE"
+
+      - name: Unzip
+        run: |
+          rm -rf site out
+          mkdir site
+          unzip -q "$ZIPFILE" -d site
+
+      - name: Show folder tree (debug)
+        run: |
+          sudo apt-get update >/dev/null 2>&1 || true
+          sudo apt-get install -y tree >/dev/null 2>&1 || true
+          echo "=== TREE site (3 levels) ==="
+          tree -a -L 3 site || (echo "tree not available"; ls -laR site | head -n 500)
+
+      - name: Try to find package.json (any depth)
+        id: findpkg
+        run: |
+          PKG_PATH=$(find site -maxdepth 4 -name package.json -not -path "*/node_modules/*" | head -n1 || true)
+          if [ -n "$PKG_PATH" ]; then
+            APP_DIR=$(dirname "$PKG_PATH")
+            echo "APP_DIR=$APP_DIR" >> $GITHUB_ENV
+            echo "Found package.json in: $APP_DIR"
+          else
+            echo "No package.json found — will deploy static files."
+          fi
+
+      - name: Setup Node (only if package.json found)
+        if: env.APP_DIR
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps & build/export (Next.js) if present
+        if: env.APP_DIR
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -e
+          # Менеджер пакетов: npm по умолчанию
+          if [ -f pnpm-lock.yaml ]; then
+            npm i -g pnpm
+            pnpm install --frozen-lockfile || pnpm install
+            BUILD_CMD="pnpm run build || true"
+            EXPORT_CMD="pnpm run export || (npx next build && npx next export || true)"
+          elif [ -f yarn.lock ]; then
+            corepack enable
+            yarn install --frozen-lockfile || yarn install
+            BUILD_CMD="yarn build || true"
+            EXPORT_CMD="yarn export || (npx next build && npx next export || true)"
+          else
+            npm ci || npm i
+            BUILD_CMD="npm run build || true"
+            EXPORT_CMD="npm run export || (npx next build && npx next export || true)"
+          fi
+
+          echo "== Build =="
+          bash -lc "$BUILD_CMD"
+          echo "== Export (static) =="
+          bash -lc "$EXPORT_CMD"
+
+          # Собранный export обычно в ./out
+          if [ -d out ]; then
+            mkdir -p $GITHUB_WORKSPACE/out
+            cp -r out/* $GITHUB_WORKSPACE/out/
+          fi
+
+      - name: Fallback to static files if no out produced
+        run: |
+          if [ ! -d out ] || [ -z "$(ls -A out 2>/dev/null)" ]; then
+            echo "No ./out — deploying static files."
+            # Ищем index.html где-нибудь внутри
+            STATIC_DIR=$(find site -maxdepth 4 -name index.html -printf '%h\n' | head -n1 || true)
+            if [ -n "$STATIC_DIR" ]; then
+              mkdir -p out
+              cp -r "$STATIC_DIR"/* out/
+            else
+              # В крайнем случае — весь unzip-контент
+              mkdir -p out
+              cp -r site/* out/ || true
+            fi
+          fi
+          echo "OUT CONTENTS:"
+          ls -la out || true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./out
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
