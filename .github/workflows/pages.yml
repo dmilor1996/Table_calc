@@ -1,4 +1,4 @@
-name: Deploy ZIP to GitHub Pages
+name: Deploy ZIP (Next export) to GitHub Pages
 
 on:
   push:
@@ -17,6 +17,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # имя репозитория как basePath (после слеша)
+      REPO_NAME: ${{ github.event.repository.name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,7 +50,7 @@ jobs:
         id: findpkg
         shell: bash
         run: |
-          PKG_PATH=$(find site -maxdepth 4 -name package.json -not -path "*/node_modules/*" | head -n1 || true)
+          PKG_PATH=$(find site -maxdepth 5 -name package.json -not -path "*/node_modules/*" | head -n1 || true)
           if [ -n "$PKG_PATH" ]; then
             APP_DIR=$(dirname "$PKG_PATH")
             echo "APP_DIR=$APP_DIR" >> $GITHUB_ENV
@@ -56,63 +59,80 @@ jobs:
             echo "No package.json found — will deploy static files."
           fi
 
+      # Если нашли package.json — подменим/создадим next.config.mjs с нужными опциями
+      - name: Inject Next config for static export
+        if: ${{ env.APP_DIR }}
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          BASE="/${{ env.REPO_NAME }}"
+          cat > next.config.mjs <<'EOF'
+          /** @type {import('next').NextConfig} */
+          const nextConfig = {
+            output: 'export',
+            trailingSlash: true,
+            images: { unoptimized: true },
+            // на GitHub Pages сайт лежит по подпути репозитория
+            basePath: process.env.NEXT_BASE_PATH,
+            assetPrefix: process.env.NEXT_BASE_PATH,
+          };
+          export default nextConfig;
+          EOF
+          echo "NEXT_BASE_PATH=$BASE" >> $GITHUB_ENV
+          echo "Wrote next.config.mjs with basePath=${BASE}"
+
       - name: Setup Node (only if package.json found)
         if: ${{ env.APP_DIR }}
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install deps & build/export (Next.js) if present
+      - name: Install deps & build/export (Next.js)
         if: ${{ env.APP_DIR }}
         working-directory: ${{ env.APP_DIR }}
+        env:
+          NEXT_BASE_PATH: /${{ env.REPO_NAME }}
         shell: bash
         run: |
           set -e
           if [ -f pnpm-lock.yaml ]; then
             npm i -g pnpm
             pnpm install --frozen-lockfile || pnpm install
-            pnpm run build || true
-            pnpm run export || (npx next build && npx next export || true)
+            pnpm run build
+            pnpm run export
           elif [ -f yarn.lock ]; then
             corepack enable
             yarn install --frozen-lockfile || yarn install
-            yarn build || true
-            yarn export || (npx next build && npx next export || true)
+            yarn build
+            yarn export
           else
             npm ci || npm i
-            npm run build || true
-            npm run export || (npx next build && npx next export || true)
+            npm run build
+            npm run export
           fi
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp -r out/* "$GITHUB_WORKSPACE/out/"
 
-          # перенесём ./out в корневую out/
-          if [ -d out ]; then
-            mkdir -p "$GITHUB_WORKSPACE/out"
-            cp -r out/* "$GITHUB_WORKSPACE/out/"
-          fi
-
-      - name: Fallback to static files if no out produced
+      # Если package.json не нашли — публикуем как есть (плюс префикс путей)
+      - name: Fallback to static files
+        if: ${{ !env.APP_DIR }}
         shell: bash
         run: |
-          if [ ! -d out ] || [ -z "$(ls -A out 2>/dev/null)" ]; then
-            echo "No ./out — deploying static files."
-            STATIC_DIR=$(find site -maxdepth 4 -name index.html -printf '%h\n' | head -n1 || true)
-            mkdir -p out
-            if [ -n "$STATIC_DIR" ]; then
-              cp -r "$STATIC_DIR"/* out/
-            else
-              cp -r site/* out/ || true
-            fi
+          STATIC_DIR=$(find site -maxdepth 5 -name index.html -printf '%h\n' | head -n1 || true)
+          mkdir -p out
+          if [ -n "$STATIC_DIR" ]; then
+            cp -r "$STATIC_DIR"/* out/
+          else
+            cp -r site/* out/ || true
           fi
-          echo "OUT CONTENTS:"
-          ls -la out || true
 
-      # ➜ Хотфикс путей для GitHub Pages под-пути /Table_calc/
-      - name: Prefix asset paths for GitHub Pages
-        run: |
+          # Добавим префикс /<repo>/ ко всем абсолютным путям
+          BASE="/${{ env.REPO_NAME }}/"
           find out -type f -name "*.html" -print0 | xargs -0 sed -i \
-            -e 's|href="/|href="/Table_calc/|g' \
-            -e 's|src="/|src="/Table_calc/|g'
-          # SPA-роутинг: отдадим index как 404.html
+            -e "s|href=\"/|href=\"${BASE}|g" \
+            -e "s|src=\"/|src=\"${BASE}|g"
+
+          # SPA 404 → index
           if [ -f out/index.html ]; then
             cp out/index.html out/404.html
           fi
@@ -125,7 +145,6 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     needs: build
     runs-on: ubuntu-latest
     steps:
