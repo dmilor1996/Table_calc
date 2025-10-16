@@ -24,7 +24,7 @@ jobs:
         run: |
           ZIPFILE=$(ls *.zip 2>/dev/null | head -n1)
           if [ -z "$ZIPFILE" ]; then
-            echo "No .zip in repo root"; exit 1
+            echo "No .zip found in repo root"; exit 1
           fi
           echo "ZIPFILE=$ZIPFILE" >> $GITHUB_ENV
           echo "Found: $ZIPFILE"
@@ -55,74 +55,7 @@ jobs:
           fi
 
       - name: Setup Node (only if package.json found)
-  if: env.APP_DIR
-  uses: actions/setup-node@v4
-  with:
-    node-version: 20
-
-      - name: Install deps & build/export (Next.js) if present
         if: env.APP_DIR
-        working-directory: ${{ env.APP_DIR }}
-        run: |
-          set -e
-          # Менеджер пакетов: npm по умолчанию
-          if [ -f pnpm-lock.yaml ]; then
-            npm i -g pnpm
-            pnpm install --frozen-lockfile || pnpm install
-            BUILD_CMD="pnpm run build || true"
-            EXPORT_CMD="pnpm run export || (npx next build && npx next export || true)"
-          elif [ -f yarn.lock ]; then
-            corepack enable
-            yarn install --frozen-lockfile || yarn install
-            BUILD_CMD="yarn build || true"
-            EXPORT_CMD="yarn export || (npx next build && npx next export || true)"
-          else
-            npm ci || npm i
-            BUILD_CMD="npm run build || true"
-            EXPORT_CMD="npm run export || (npx next build && npx next export || true)"
-          fi
-
-          echo "== Build =="
-          bash -lc "$BUILD_CMD"
-          echo "== Export (static) =="
-          bash -lc "$EXPORT_CMD"
-
-          # Собранный export обычно в ./out
-          if [ -d out ]; then
-            mkdir -p $GITHUB_WORKSPACE/out
-            cp -r out/* $GITHUB_WORKSPACE/out/
-          fi
-
-      - name: Fallback to static files if no out produced
-        run: |
-          if [ ! -d out ] || [ -z "$(ls -A out 2>/dev/null)" ]; then
-            echo "No ./out — deploying static files."
-            # Ищем index.html где-нибудь внутри
-            STATIC_DIR=$(find site -maxdepth 4 -name index.html -printf '%h\n' | head -n1 || true)
-            if [ -n "$STATIC_DIR" ]; then
-              mkdir -p out
-              cp -r "$STATIC_DIR"/* out/
-            else
-              # В крайнем случае — весь unzip-контент
-              mkdir -p out
-              cp -r site/* out/ || true
-            fi
-          fi
-          echo "OUT CONTENTS:"
-          ls -la out || true
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/setup-node@v4
         with:
-          path: ./out
-
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          node-version
