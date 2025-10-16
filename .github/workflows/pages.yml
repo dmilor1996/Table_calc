@@ -1,7 +1,8 @@
 name: Deploy ZIP to GitHub Pages
+
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -39,11 +40,12 @@ jobs:
         run: |
           sudo apt-get update >/dev/null 2>&1 || true
           sudo apt-get install -y tree >/dev/null 2>&1 || true
-          echo "=== TREE site (3 levels) ==="
-          tree -a -L 3 site || (echo "tree not available"; ls -laR site | head -n 500)
+          echo "=== TREE site (2 levels) ==="
+          tree -a -L 2 site || (echo "tree not available"; ls -laR site | head -n 400)
 
       - name: Try to find package.json (any depth)
         id: findpkg
+        shell: bash
         run: |
           PKG_PATH=$(find site -maxdepth 4 -name package.json -not -path "*/node_modules/*" | head -n1 || true)
           if [ -n "$PKG_PATH" ]; then
@@ -55,7 +57,67 @@ jobs:
           fi
 
       - name: Setup Node (only if package.json found)
-        if: env.APP_DIR
+        if: ${{ env.APP_DIR }}
         uses: actions/setup-node@v4
         with:
-          node-version
+          node-version: '20'
+
+      - name: Install deps & build/export (Next.js) if present
+        if: ${{ env.APP_DIR }}
+        working-directory: ${{ env.APP_DIR }}
+        shell: bash
+        run: |
+          set -e
+          if [ -f pnpm-lock.yaml ]; then
+            npm i -g pnpm
+            pnpm install --frozen-lockfile || pnpm install
+            pnpm run build || true
+            pnpm run export || (npx next build && npx next export || true)
+          elif [ -f yarn.lock ]; then
+            corepack enable
+            yarn install --frozen-lockfile || yarn install
+            yarn build || true
+            yarn export || (npx next build && npx next export || true)
+          else
+            npm ci || npm i
+            npm run build || true
+            npm run export || (npx next build && npx next export || true)
+          fi
+
+          # перенесём ./out в корневую out/
+          if [ -d out ]; then
+            mkdir -p "$GITHUB_WORKSPACE/out"
+            cp -r out/* "$GITHUB_WORKSPACE/out/"
+          fi
+
+      - name: Fallback to static files if no out produced
+        shell: bash
+        run: |
+          if [ ! -d out ] || [ -z "$(ls -A out 2>/dev/null)" ]; then
+            echo "No ./out — deploying static files."
+            STATIC_DIR=$(find site -maxdepth 4 -name index.html -printf '%h\n' | head -n1 || true)
+            mkdir -p out
+            if [ -n "$STATIC_DIR" ]; then
+              cp -r "$STATIC_DIR"/* out/
+            else
+              cp -r site/* out/ || true
+            fi
+          fi
+          echo "OUT CONTENTS:"
+          ls -la out || true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./out
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
