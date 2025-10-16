@@ -55,11 +55,10 @@ jobs:
           fi
 
       - name: Setup Node (only if package.json found)
-        if: env.APP_DIR
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
+  if: env.APP_DIR
+  uses: actions/setup-node@v4
+  with:
+    node-version: 20
 
       - name: Install deps & build/export (Next.js) if present
         if: env.APP_DIR
