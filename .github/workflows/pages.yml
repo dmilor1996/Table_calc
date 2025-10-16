@@ -106,6 +106,17 @@ jobs:
           echo "OUT CONTENTS:"
           ls -la out || true
 
+      # ➜ Хотфикс путей для GitHub Pages под-пути /Table_calc/
+      - name: Prefix asset paths for GitHub Pages
+        run: |
+          find out -type f -name "*.html" -print0 | xargs -0 sed -i \
+            -e 's|href="/|href="/Table_calc/|g' \
+            -e 's|src="/|src="/Table_calc/|g'
+          # SPA-роутинг: отдадим index как 404.html
+          if [ -f out/index.html ]; then
+            cp out/index.html out/404.html
+          fi
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
